@@ -1,8 +1,12 @@
 package eu.kanade.tachiyomi.extension.fr.raijinscans
 
+import android.content.SharedPreferences
 import android.util.Base64
+import androidx.preference.CheckBoxPreference
+import androidx.preference.PreferenceScreen
 import eu.kanade.tachiyomi.network.GET
 import eu.kanade.tachiyomi.network.POST
+import eu.kanade.tachiyomi.source.ConfigurableSource
 import eu.kanade.tachiyomi.source.model.FilterList
 import eu.kanade.tachiyomi.source.model.MangasPage
 import eu.kanade.tachiyomi.source.model.Page
@@ -10,6 +14,7 @@ import eu.kanade.tachiyomi.source.model.SChapter
 import eu.kanade.tachiyomi.source.model.SManga
 import eu.kanade.tachiyomi.source.online.HttpSource
 import eu.kanade.tachiyomi.util.asJsoup
+import keiyoushi.utils.getPreferencesLazy
 import keiyoushi.utils.parseAs
 import okhttp3.FormBody
 import okhttp3.HttpUrl.Companion.toHttpUrl
@@ -22,7 +27,9 @@ import java.util.Calendar
 import java.util.Locale
 import kotlin.collections.mapIndexed
 
-class RaijinScans : HttpSource() {
+class RaijinScans :
+    HttpSource(),
+    ConfigurableSource {
 
     override val name = "Raijin Scans"
     override val baseUrl = "https://raijin-scans.fr"
@@ -30,6 +37,8 @@ class RaijinScans : HttpSource() {
     override val supportsLatest = true
 
     override val client = network.cloudflareClient
+
+    private val preferences: SharedPreferences by getPreferencesLazy()
 
     private var nonce: String? = null
 
@@ -155,12 +164,20 @@ class RaijinScans : HttpSource() {
     }
 
     // ========================= Chapter List ==========================
-    override fun chapterListParse(response: Response): List<SChapter> = response.asJsoup().select("ul.scroll-sm li.item").map(::chapterFromElement)
+    override fun chapterListParse(response: Response): List<SChapter> {
+        val showPremium = preferences.getBoolean(SHOW_PREMIUM_KEY, SHOW_PREMIUM_DEFAULT)
+        return response.asJsoup().select("ul.scroll-sm li.item")
+            .mapNotNull { element ->
+                val isPremium = element.selectFirst("a.cairo-premium") != null
+                if (!showPremium && isPremium) return@mapNotNull null
+                chapterFromElement(element, isPremium && showPremium)
+            }
+    }
 
-    private fun chapterFromElement(element: Element): SChapter = SChapter.create().apply {
+    private fun chapterFromElement(element: Element, isPremium: Boolean = false): SChapter = SChapter.create().apply {
         val link = element.selectFirst("a")!!
         setUrlWithoutDomain(link.attr("abs:href"))
-        name = link.attr("title").trim()
+        name = if (isPremium) "🔒 ${link.attr("title").trim()}" else link.attr("title").trim()
 
         date_upload = parseRelativeDateString(link.selectFirst("> span:nth-of-type(2)")?.text())
     }
@@ -200,4 +217,19 @@ class RaijinScans : HttpSource() {
     }
 
     override fun imageUrlParse(response: Response): String = throw UnsupportedOperationException("Not used.")
+
+    // ========================== Preferences ===========================
+    override fun setupPreferenceScreen(screen: PreferenceScreen) {
+        CheckBoxPreference(screen.context).apply {
+            key = SHOW_PREMIUM_KEY
+            title = "Show premium chapters"
+            summary = "Show paid chapters (identified by 🔒) in the list."
+            setDefaultValue(SHOW_PREMIUM_DEFAULT)
+        }.also(screen::addPreference)
+    }
+
+    companion object {
+        private const val SHOW_PREMIUM_KEY = "show_premium_chapters"
+        private const val SHOW_PREMIUM_DEFAULT = false
+    }
 }
